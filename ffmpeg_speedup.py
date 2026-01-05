@@ -7,7 +7,7 @@ from multiprocessing import shared_memory
 import cv2
 import subprocess
 import logging
-from tqdm import tqdm  # 新增进度条依赖
+from tqdm import tqdm
 
 class FrameBackend:
     """双模式帧存取后端"""
@@ -58,42 +58,41 @@ class FFmpegPipe:
         self.height = height
         self.fps = fps
 
-    def decode(self, input_file):
+    def decode(self, input_source):
+        """支持文件/RTSP/RTMP输入"""
         cmd = [
-            "ffmpeg", "-i", input_file,
+            "ffmpeg", "-i", input_source,
             "-f", "rawvideo", "-pix_fmt", "bgr24",
             "-vf", f"scale={self.width}:{self.height}",
             "pipe:1"
         ]
         return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
-    def encode(self, out_file):
+    def encode(self, output_dest, is_stream=False):
+        """支持文件/RTMP输出"""
         cmd = [
             "ffmpeg", "-y",
             "-f", "rawvideo", "-pix_fmt", "bgr24",
             "-s", f"{self.width}x{self.height}",
             "-r", str(self.fps),
             "-i", "pipe:0",
-            "-c:v", "libx264", "-pix_fmt", "yuv420p",
-            out_file
+            "-c:v", "libx264", "-pix_fmt", "yuv420p"
         ]
+        if is_stream:
+            cmd += ["-f", "flv"]
+        cmd.append(output_dest)
         return subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
-def process_video(input_file, output_file, backend_mode="queue"):
+def process_video(input_source, output_dest, backend_mode="queue", is_stream_out=False):
     width, height = 1280, 720
     backend = FrameBackend(width, height, mode=backend_mode)
     ff = FFmpegPipe(width, height, fps=30)
-    dec_proc = ff.decode(input_file)
-    enc_proc = ff.encode(output_file)
-
-    # 获取总帧数用于进度条
-    cap = cv2.VideoCapture(input_file)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    cap.release()
+    dec_proc = ff.decode(input_source)
+    enc_proc = ff.encode(output_dest, is_stream=is_stream_out)
 
     frame_count = 0
     start_time = time.time()
-    pbar = tqdm(total=total_frames, desc=f"{backend_mode} processing", ncols=100)
+    pbar = tqdm(desc=f"{backend_mode} processing", ncols=100, unit="frame")
 
     while True:
         raw_frame = dec_proc.stdout.read(width * height * 3)
@@ -127,9 +126,18 @@ def process_video(input_file, output_file, backend_mode="queue"):
     print(f"[{backend_mode}] Total frames: {frame_count}, Total time: {total_time:.2f}s, Avg FPS: {frame_count/total_time:.2f}")
 
 if __name__ == "__main__":
+    # 文件输入输出示例
     input_file = "test.mp4"
-    print("Processing with Queue backend...")
-    process_video(input_file, "out_queue.mp4", backend_mode="queue")
+    output_file = "out_queue.mp4"
+    print("Processing file with Queue backend...")
+    process_video(input_file, output_file, backend_mode="queue", is_stream_out=False)
 
-    print("\nProcessing with SharedMemory backend...")
-    process_video(input_file, "out_shm.mp4", backend_mode="shm")
+    shm_output_file = "out_queue_shm.mp4"
+    print("Processing file with Shm backend...")
+    process_video(input_file, shm_output_file, backend_mode="shm", is_stream_out=False)
+
+    # RTSP/RTMP示例
+    # rtsp_input = "rtsp://username:password@ip:port/stream"
+    # rtmp_output = "rtmp://localhost/live/stream"
+    # print("\nProcessing RTSP->RTMP with SharedMemory backend...")
+    # process_video(rtsp_input, rtmp_output, backend_mode="shm", is_stream_out=True)
